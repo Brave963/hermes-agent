@@ -372,6 +372,13 @@ class MemoryManager:
                     "Memory provider '%s' prefetch failed (non-fatal): %s",
                     provider.name, e,
                 )
+        try:
+            from agent.memory_clarification_queue import build_clarification_context_block
+            clarification_block = build_clarification_context_block(query)
+            if clarification_block.strip():
+                parts.append(clarification_block)
+        except Exception as e:
+            logger.debug("Memory clarification prefetch failed (non-fatal): %s", e)
         return "\n\n".join(parts)
 
     def queue_prefetch_all(self, query: str, *, session_id: str = "") -> None:

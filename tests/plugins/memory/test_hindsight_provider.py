@@ -601,7 +601,16 @@ class TestToolHandlers:
 
 class TestPrefetch:
     def test_prefetch_returns_empty_when_no_result(self, provider):
+        provider._client.arecall.return_value = SimpleNamespace(results=[])
         assert provider.prefetch("test") == ""
+
+    def test_prefetch_without_cached_result_recalls_current_query(self, provider):
+        result = provider.prefetch("first turn query")
+        assert "Hindsight Memory" in result
+        assert "Memory 1" in result
+        call_kwargs = provider._client.arecall.call_args.kwargs
+        assert call_kwargs["query"] == "first turn query"
+        assert call_kwargs["bank_id"] == "test-bank"
 
     def test_prefetch_default_preamble(self, provider):
         provider._prefetch_result = "- some memory"
@@ -1010,8 +1019,11 @@ class TestSessionSwitchBufferFlush:
         provider._prefetch_result = "old-session recall: User likes Rust"
         provider.on_session_switch("new-sid")
         assert provider._prefetch_result == ""
-        # And subsequent prefetch() should now report empty, not the leftover.
-        assert provider.prefetch("anything") == ""
+        # Subsequent prefetch may synchronously recall the new query, but it
+        # must not leak the old session's cached text.
+        result = provider.prefetch("anything")
+        assert "old-session recall" not in result
+        assert "Memory 1" in result
 
     def test_in_flight_prefetch_thread_drained_on_switch(self, provider, monkeypatch):
         """on_session_switch must wait for an in-flight prefetch from the

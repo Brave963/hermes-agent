@@ -16,6 +16,8 @@ def _make_agent(**overrides):
         _environment_probe=False,
         _kanban_worker_guidance="",
         _memory_store=None,
+        _memory_enabled=False,
+        _user_profile_enabled=False,
         _memory_manager=None,
         model="",
         provider="",
@@ -55,3 +57,23 @@ class TestContextFileCwd:
     def test_configured_dir_when_terminal_cwd_set(self, monkeypatch, tmp_path):
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         assert _captured_context_cwd(_make_agent()) == tmp_path
+
+
+class TestMemoryManifestInjection:
+    def test_memory_manifest_is_in_volatile_prompt_parts(self, monkeypatch, tmp_path):
+        home = tmp_path / "hermes-home"
+        manifest = home / "memories" / "MEMORY_MANIFEST.md"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text("Known inventory: project Alpha, preference Beta", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        with (
+            patch("run_agent.load_soul_md", return_value=""),
+            patch("run_agent.build_nous_subscription_prompt", return_value=""),
+            patch("run_agent.build_environment_hints", return_value=""),
+            patch("run_agent.build_context_files_prompt", return_value=""),
+        ):
+            parts = build_system_prompt_parts(_make_agent())
+
+        assert "# Memory Index" in parts["volatile"]
+        assert "Known inventory: project Alpha" in parts["volatile"]

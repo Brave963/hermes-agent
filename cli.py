@@ -1372,6 +1372,25 @@ def _cleanup_worktree(info: Dict[str, str] = None) -> None:
     print(f"\033[32m✓ Worktree cleaned up: {wt_path}\033[0m")
 
 
+def _default_cli_session_user_id() -> str | None:
+    """Return the configured default user id for terminal/CLI sessions."""
+    try:
+        from hermes_cli.config import load_config as _load_full_config
+        cfg = _load_full_config() or {}
+        value = (
+            cfg.get("default_terminal_user")
+            or (cfg.get("memory_graph") or {}).get("default_terminal_user")
+            or (cfg.get("agent") or {}).get("default_terminal_user")
+        )
+        if value is None:
+            return None
+        value = str(value).strip()
+        return value or None
+    except Exception:
+        return None
+
+
+
 def _run_state_db_auto_maintenance(session_db) -> None:
     """Call ``SessionDB.maybe_auto_prune_and_vacuum`` using current config.
 
@@ -6768,6 +6787,7 @@ class HermesCLI:
                     self._session_db.create_session(
                         session_id=self.session_id,
                         source=os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                        user_id=_default_cli_session_user_id(),
                         model=self.model,
                         model_config={
                             "max_iterations": self.max_turns,
@@ -7246,6 +7266,7 @@ class HermesCLI:
             self._session_db.create_session(
                 session_id=new_session_id,
                 source=os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                user_id=_default_cli_session_user_id(),
                 model=self.model,
                 model_config={
                     "max_iterations": self.max_turns,

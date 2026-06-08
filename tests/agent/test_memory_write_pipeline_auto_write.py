@@ -355,7 +355,7 @@ def test_meta_memory_assessment_question_is_rejected_by_quality_gate():
         confidence=0.9,
     )
 
-    classification = pipeline.classify_write(candidate, namespace="telegram:7359770766")
+    classification = pipeline.classify_write(candidate, namespace="tenant:test-user")
 
     assert classification["action"] == "ignore"
     assert classification["reason"] == "meta_memory_assessment_question_not_a_durable_fact"
@@ -381,6 +381,6 @@ def test_real_agent_memory_correction_still_passes_quality_gate():
         confidence=0.9,
     )
 
-    classification = pipeline.classify_write(candidate, namespace="telegram:7359770766")
+    classification = pipeline.classify_write(candidate, namespace="tenant:test-user")
 
     assert classification["action"] == "write"

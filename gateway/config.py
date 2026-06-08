@@ -1079,7 +1079,19 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(group_allowed_chats, list):
                         group_allowed_chats = ",".join(str(v) for v in group_allowed_chats)
                     os.environ["TELEGRAM_GROUP_ALLOWED_CHATS"] = str(group_allowed_chats)
-                for _telegram_extra_key in ("guest_mode", "disable_link_previews", "observe_unmentioned_group_messages"):
+                personal_workspace_chats = telegram_cfg.get("personal_workspace_chats")
+                if personal_workspace_chats is not None and not os.getenv("TELEGRAM_PERSONAL_WORKSPACE_CHATS"):
+                    os.environ["TELEGRAM_PERSONAL_WORKSPACE_CHATS"] = json.dumps(personal_workspace_chats)
+                if "history_backfill" in telegram_cfg and not os.getenv("TELEGRAM_HISTORY_BACKFILL"):
+                    os.environ["TELEGRAM_HISTORY_BACKFILL"] = str(telegram_cfg["history_backfill"]).lower()
+                if "history_backfill_limit" in telegram_cfg and not os.getenv("TELEGRAM_HISTORY_BACKFILL_LIMIT"):
+                    os.environ["TELEGRAM_HISTORY_BACKFILL_LIMIT"] = str(telegram_cfg["history_backfill_limit"])
+                if "context_cache_limit" in telegram_cfg and not os.getenv("TELEGRAM_CONTEXT_CACHE_LIMIT"):
+                    os.environ["TELEGRAM_CONTEXT_CACHE_LIMIT"] = str(telegram_cfg["context_cache_limit"])
+                for _telegram_extra_key in (
+                    "guest_mode", "disable_link_previews", "observe_unmentioned_group_messages",
+                    "personal_workspace_chats", "history_backfill", "history_backfill_limit", "context_cache_limit",
+                ):
                     if _telegram_extra_key in telegram_cfg:
                         plat_data = platforms_data.setdefault(Platform.TELEGRAM.value, {})
                         if not isinstance(plat_data, dict):

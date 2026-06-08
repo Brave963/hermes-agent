@@ -1728,8 +1728,34 @@ async def get_profiles_sessions(
         except Exception:
             _log.exception("GET /api/profiles/sessions: list_profiles failed")
             targets = []
-        if not targets:
-            targets.append(("default", profiles_mod.get_profile_dir("default")))
+        try:
+            from hermes_constants import get_hermes_home as _current_hermes_home
+            current_default_home = Path(_current_hermes_home())
+            if not any(name == "default" and Path(home) == current_default_home for name, home in targets):
+                targets = [(name, home) for name, home in targets if not (name == "default" and Path(home) != current_default_home)]
+                targets.insert(0, ("default", current_default_home))
+        except Exception:
+            pass
+        try:
+            import hermes_state as _hermes_state_mod
+            default_db_path = Path(getattr(_hermes_state_mod, "DEFAULT_DB_PATH"))
+            if default_db_path.name == "state.db":
+                default_db_home = default_db_path.parent
+                if not any(name == "default" and Path(home) == default_db_home for name, home in targets):
+                    targets.insert(0, ("default", default_db_home))
+        except Exception:
+            pass
+        try:
+            current_db = SessionDB()
+            try:
+                session_db_home = Path(current_db.db_path).parent
+            finally:
+                current_db.close()
+            if not any(name == "default" and Path(home) == session_db_home for name, home in targets):
+                targets.insert(0, ("default", session_db_home))
+        except Exception:
+            if not targets:
+                targets.append(("default", profiles_mod.get_profile_dir("default")))
 
     min_message_count = max(0, min_messages)
     archived_only = archived == "only"

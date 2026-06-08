@@ -169,6 +169,25 @@ def check_telegram_requirements() -> bool:
 _MDV2_ESCAPE_RE = re.compile(r'([_*\[\]()~`>#\+\-=|{}.!\\])')
 
 
+
+
+class _TelegramParseModeValue(str):
+    def __new__(cls, value: str, name: str):
+        obj = str.__new__(cls, value)
+        obj._name = name
+        return obj
+
+    def __repr__(self) -> str:
+        return f"ParseMode.{self._name}"
+
+
+def _telegram_markdown_v2_parse_mode():
+    value = getattr(ParseMode, "MARKDOWN_V2", "MarkdownV2") if ParseMode is not None else "MarkdownV2"
+    return _TelegramParseModeValue(str(value), "MARKDOWN_V2")
+
+
+_TELEGRAM_MARKDOWN_V2 = _telegram_markdown_v2_parse_mode()
+
 def _escape_mdv2(text: str) -> str:
     """Escape Telegram MarkdownV2 special characters with a preceding backslash."""
     return _MDV2_ESCAPE_RE.sub(r'\\\1', text)
@@ -496,6 +515,10 @@ class TelegramAdapter(BasePlatformAdapter):
         # outbound send/edit calls for the same chat so streaming edits, final
         # sends, and status updates do not race into the same flood window.
         self._chat_send_locks: Dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+        self._recent_group_context: Dict[str, list] = {}
+        self._auto_personal_workspace_chats: Set[str] = set()
+        self._blocked_auto_personal_workspace_chats: Set[str] = set()
+        self._auto_personal_workspace_probe_attempted: Set[str] = set()
 
     def _chat_send_lock(self, chat_id: str) -> asyncio.Lock:
         locks = getattr(self, "_chat_send_locks", None)
@@ -698,9 +721,17 @@ class TelegramAdapter(BasePlatformAdapter):
 
     @classmethod
     def _message_thread_id_for_send(cls, thread_id: Optional[str]) -> Optional[int]:
-        if not thread_id or str(thread_id) == cls._GENERAL_TOPIC_THREAD_ID:
+        if not thread_id:
             return None
-        return int(thread_id)
+        thread_id_str = str(thread_id)
+        if thread_id_str == cls._GENERAL_TOPIC_THREAD_ID:
+            return None
+        if thread_id_str.startswith("group:"):
+            parts = thread_id_str.split(":")
+            if len(parts) >= 3 and parts[-1].lstrip("-").isdigit():
+                return int(parts[-1])
+            return None
+        return int(thread_id_str)
 
     @classmethod
     def _message_thread_id_for_typing(cls, thread_id: Optional[str]) -> Optional[int]:
@@ -713,7 +744,13 @@ class TelegramAdapter(BasePlatformAdapter):
         # sends still map "1" → None via _message_thread_id_for_send.
         if not thread_id:
             return None
-        return int(thread_id)
+        thread_id_str = str(thread_id)
+        if thread_id_str.startswith("group:"):
+            parts = thread_id_str.split(":")
+            if len(parts) >= 3 and parts[-1].lstrip("-").isdigit():
+                return int(parts[-1])
+            return None
+        return int(thread_id_str)
 
     @staticmethod
     def _is_thread_not_found_error(error: Exception) -> bool:
@@ -1968,7 +2005,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 chat_id,
                                 chat_id=int(chat_id),
                                 text=chunk,
-                                parse_mode=ParseMode.MARKDOWN_V2,
+                                parse_mode=_TELEGRAM_MARKDOWN_V2,
                                 reply_to_message_id=reply_to_id,
                                 **thread_kwargs,
                                 **self._link_preview_kwargs(),
@@ -2221,7 +2258,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     chat_id=int(chat_id),
                     message_id=int(message_id),
                     text=formatted,
-                    parse_mode=ParseMode.MARKDOWN_V2,
+                    parse_mode=_TELEGRAM_MARKDOWN_V2,
                 )
             except Exception as fmt_err:
                 # "Message is not modified" is a no-op, not an error
@@ -2358,7 +2395,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         chat_id=int(chat_id),
                         message_id=int(message_id),
                         text=formatted,
-                        parse_mode=ParseMode.MARKDOWN_V2,
+                        parse_mode=_TELEGRAM_MARKDOWN_V2,
                     )
                 except Exception as fmt_err:
                     if "not modified" not in str(fmt_err).lower():
@@ -2413,7 +2450,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         chat_id,
                         chat_id=int(chat_id),
                         text=text,
-                        parse_mode=ParseMode.MARKDOWN_V2 if use_markdown else None,
+                        parse_mode=_TELEGRAM_MARKDOWN_V2 if use_markdown else None,
                         reply_to_message_id=reply_to_id,
                         **thread_kwargs,
                         **self._link_preview_kwargs(),
@@ -2665,7 +2702,7 @@ class TelegramAdapter(BasePlatformAdapter):
             msg = await self._send_message_with_thread_fallback(
                 chat_id=int(chat_id),
                 text=text,
-                parse_mode=ParseMode.MARKDOWN_V2,
+                parse_mode=_TELEGRAM_MARKDOWN_V2,
                 reply_markup=keyboard,
                 reply_to_message_id=reply_to_id,
                 **self._thread_kwargs_for_send(
@@ -2927,7 +2964,7 @@ class TelegramAdapter(BasePlatformAdapter):
             msg = await self._send_message_with_thread_fallback(
                 chat_id=int(chat_id),
                 text=text,
-                parse_mode=ParseMode.MARKDOWN_V2,
+                parse_mode=_TELEGRAM_MARKDOWN_V2,
                 reply_markup=keyboard,
                 reply_to_message_id=reply_to_id,
                 **self._thread_kwargs_for_send(
@@ -3095,7 +3132,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         f"Select a model:{extra}"
                     )
                 ),
-                parse_mode=ParseMode.MARKDOWN_V2,
+                parse_mode=_TELEGRAM_MARKDOWN_V2,
                 reply_markup=keyboard,
             )
             await query.answer()
@@ -3131,7 +3168,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         f"Select a model:{extra}"
                     )
                 ),
-                parse_mode=ParseMode.MARKDOWN_V2,
+                parse_mode=_TELEGRAM_MARKDOWN_V2,
                 reply_markup=keyboard,
             )
             await query.answer()
@@ -3167,7 +3204,7 @@ class TelegramAdapter(BasePlatformAdapter):
             try:
                 await query.edit_message_text(
                     text=self.format_message(result_text),
-                    parse_mode=ParseMode.MARKDOWN_V2,
+                    parse_mode=_TELEGRAM_MARKDOWN_V2,
                     reply_markup=None,
                 )
             except Exception:
@@ -3224,7 +3261,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         f"Select a provider:"
                     )
                 ),
-                parse_mode=ParseMode.MARKDOWN_V2,
+                parse_mode=_TELEGRAM_MARKDOWN_V2,
                 reply_markup=keyboard,
             )
             await query.answer()
@@ -3247,7 +3284,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         f"Select a provider:"
                     )
                 ),
-                parse_mode=ParseMode.MARKDOWN_V2,
+                parse_mode=_TELEGRAM_MARKDOWN_V2,
                 reply_markup=keyboard,
             )
             await query.answer()
@@ -3343,7 +3380,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 try:
                     await query.edit_message_text(
                         text=self.format_message(f"{label} by {user_display}"),
-                        parse_mode=ParseMode.MARKDOWN_V2,
+                        parse_mode=_TELEGRAM_MARKDOWN_V2,
                         reply_markup=None,
                     )
                 except Exception:
@@ -3406,7 +3443,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 try:
                     await query.edit_message_text(
                         text=self.format_message(f"{label} by {user_display}"),
-                        parse_mode=ParseMode.MARKDOWN_V2,
+                        parse_mode=_TELEGRAM_MARKDOWN_V2,
                         reply_markup=None,
                     )
                 except Exception:
@@ -3595,7 +3632,7 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             await query.edit_message_text(
                 text=self.format_message(f"⚕ Update prompt answered: *{label}*"),
-                parse_mode=ParseMode.MARKDOWN_V2,
+                parse_mode=_TELEGRAM_MARKDOWN_V2,
                 reply_markup=None,
             )
         except Exception:
@@ -4958,6 +4995,8 @@ class TelegramAdapter(BasePlatformAdapter):
         raw_message = getattr(event, "raw_message", None)
         if not raw_message or not self._is_group_chat(raw_message):
             return event
+        if getattr(event, "channel_context", None):
+            return event
         chat_id_str = str(getattr(getattr(raw_message, "chat", None), "id", ""))
         allowed = self._telegram_observe_allowed_chats()
         if not allowed or chat_id_str not in allowed:
@@ -5103,6 +5142,178 @@ class TelegramAdapter(BasePlatformAdapter):
             adapter_name = getattr(self, "name", "telegram")
             logger.warning("[%s] Failed to observe Telegram group message: %s", adapter_name, exc)
 
+
+    def _telegram_history_backfill_enabled(self) -> bool:
+        raw = self.config.extra.get("history_backfill")
+        if raw is None:
+            raw = os.getenv("TELEGRAM_HISTORY_BACKFILL", "false")
+        if isinstance(raw, str):
+            return raw.lower() in {"true", "1", "yes", "on"}
+        return bool(raw)
+
+    def _telegram_history_backfill_limit(self) -> int:
+        raw = self.config.extra.get("history_backfill_limit", os.getenv("TELEGRAM_HISTORY_BACKFILL_LIMIT", "5"))
+        try:
+            return max(0, int(raw))
+        except Exception:
+            return 5
+
+    def _telegram_context_cache_limit(self) -> int:
+        raw = self.config.extra.get("context_cache_limit", os.getenv("TELEGRAM_CONTEXT_CACHE_LIMIT", "50"))
+        try:
+            return max(1, int(raw))
+        except Exception:
+            return 50
+
+    def _telegram_personal_workspace_chats(self) -> Set[str]:
+        raw = self.config.extra.get("personal_workspace_chats")
+        if raw is None:
+            env = os.getenv("TELEGRAM_PERSONAL_WORKSPACE_CHATS", "")
+            if env.strip().startswith("["):
+                try:
+                    raw = json.loads(env)
+                except Exception:
+                    raw = env
+            else:
+                raw = env
+        result: Set[str] = set()
+        if isinstance(raw, dict):
+            result.update(str(k).strip() for k in raw.keys() if str(k).strip())
+        elif isinstance(raw, list):
+            for item in raw:
+                if isinstance(item, dict):
+                    cid = item.get("chat_id")
+                    if cid is not None:
+                        result.add(str(cid).strip())
+                elif str(item).strip():
+                    result.add(str(item).strip())
+        elif isinstance(raw, str):
+            for part in raw.split(","):
+                if part.strip():
+                    result.add(part.strip())
+        return result
+
+    def _is_personal_workspace_chat(self, message: Message) -> bool:
+        chat_id = str(getattr(getattr(message, "chat", None), "id", ""))
+        return chat_id in self._telegram_personal_workspace_chats() or chat_id in getattr(self, "_auto_personal_workspace_chats", set())
+
+    def _personal_workspace_sender_authorized(self, message: Message) -> bool:
+        user = getattr(message, "from_user", None)
+        if not user:
+            return False
+        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+        auth_fn = getattr(runner, "_is_user_authorized", None)
+        if callable(auth_fn):
+            try:
+                from gateway.session import SessionSource
+                return bool(auth_fn(SessionSource(
+                    platform=Platform.TELEGRAM,
+                    chat_id=str(user.id),
+                    chat_type="dm",
+                    user_id=str(user.id),
+                    user_name=getattr(user, "full_name", None) or getattr(user, "first_name", None),
+                )))
+            except Exception:
+                return False
+        return True
+
+    async def _maybe_register_auto_personal_workspace_chat(self, message: Message) -> None:
+        if not self._is_group_chat(message):
+            return
+        chat_id = str(getattr(getattr(message, "chat", None), "id", ""))
+        if not chat_id or chat_id in self._auto_personal_workspace_chats or chat_id in self._blocked_auto_personal_workspace_chats:
+            return
+        if not self._personal_workspace_sender_authorized(message):
+            self._blocked_auto_personal_workspace_chats.add(chat_id)
+            return
+        try:
+            count = await self._bot.get_chat_member_count(chat_id)
+        except Exception:
+            count = None
+        if count == 2:
+            self._auto_personal_workspace_chats.add(chat_id)
+        else:
+            self._blocked_auto_personal_workspace_chats.add(chat_id)
+
+    async def _handle_service_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        msg = self._effective_update_message(update)
+        if not msg:
+            return
+        members = getattr(msg, "new_chat_members", None) or []
+        bot_id = str(getattr(getattr(self, "_bot", None), "id", ""))
+        if any(str(getattr(member, "id", "")) == bot_id for member in members):
+            await self._maybe_register_auto_personal_workspace_chat(msg)
+
+    def _group_context_key(self, message: Message) -> str:
+        chat_id = str(getattr(getattr(message, "chat", None), "id", ""))
+        thread_id = getattr(message, "message_thread_id", None)
+        return f"{chat_id}:{thread_id}" if thread_id is not None else chat_id
+
+    def _format_group_context_message(self, message: Message) -> str:
+        user = getattr(message, "from_user", None)
+        name = getattr(user, "full_name", None) or getattr(user, "username", None) or getattr(user, "first_name", None) or "Unknown"
+        text = getattr(message, "text", None) or getattr(message, "caption", None) or ""
+        return f"[{name}] {text}"
+
+    def _should_capture_channel_context(self, message: Message) -> bool:
+        if not self._telegram_history_backfill_enabled():
+            return False
+        if self._is_personal_workspace_chat(message):
+            return False
+        if not self._is_group_chat(message):
+            return False
+        if not self._telegram_require_mention():
+            return False
+        return not self._should_process_message(message)
+
+    def _cache_group_context_message(self, message: Message) -> None:
+        if not self._telegram_history_backfill_enabled() or self._is_personal_workspace_chat(message):
+            return
+        if not self._is_group_chat(message):
+            return
+        key = self._group_context_key(message)
+        cache = getattr(self, "_recent_group_context", None)
+        if cache is None:
+            cache = {}
+            self._recent_group_context = cache
+        bucket = list(cache.get(key, []))
+        bucket.append(self._format_group_context_message(message))
+        cache[key] = bucket[-self._telegram_context_cache_limit():]
+
+    def _fetch_cached_channel_context(self, message: Message) -> str:
+        lines = list(getattr(self, "_recent_group_context", {}).get(self._group_context_key(message), []))
+        if not lines:
+            return ""
+        limit = self._telegram_history_backfill_limit()
+        lines = lines[-limit:] if limit else []
+        return "[Recent visible group messages]\n" + "\n".join(lines) if lines else ""
+
+    def _fetch_recent_channel_context(self, message: Message) -> str:
+        if not self._telegram_history_backfill_enabled():
+            return ""
+        lines = []
+        seen = set()
+        current = getattr(message, "reply_to_message", None)
+        trigger_thread = getattr(message, "message_thread_id", None)
+        trigger_chat = str(getattr(getattr(message, "chat", None), "id", ""))
+        while current is not None and len(lines) < self._telegram_history_backfill_limit():
+            cur_chat = str(getattr(getattr(current, "chat", None), "id", trigger_chat))
+            cur_thread = getattr(current, "message_thread_id", None)
+            if cur_chat != trigger_chat or cur_thread != trigger_thread:
+                return ""
+            mid = getattr(current, "message_id", None)
+            if mid in seen:
+                break
+            seen.add(mid)
+            lines.append(self._format_group_context_message(current))
+            current = getattr(current, "reply_to_message", None)
+        if not lines:
+            return self._fetch_cached_channel_context(message)
+        return "[Recent replied context]\n" + "\n".join(reversed(lines))
+
+    def _build_channel_context_for_trigger(self, message: Message) -> str:
+        return self._fetch_recent_channel_context(message)
+
     def _should_process_message(self, message: Message, *, is_command: bool = False) -> bool:
         """Apply Telegram group trigger rules.
 
@@ -5152,6 +5363,9 @@ class TelegramAdapter(BasePlatformAdapter):
             return True
 
         chat_id_str = str(getattr(getattr(message, "chat", None), "id", ""))
+
+        if self._is_personal_workspace_chat(message):
+            return self._personal_workspace_sender_authorized(message)
 
         if self._telegram_exclusive_bot_mentions() and self._explicit_bot_mentions_exclude_self(message):
             return False
@@ -5227,6 +5441,8 @@ class TelegramAdapter(BasePlatformAdapter):
         if not msg or not msg.text:
             return
         if not self._should_process_message(msg):
+            if self._should_capture_channel_context(msg):
+                self._cache_group_context_message(msg)
             if self._should_observe_unmentioned_group_message(msg):
                 self._observe_unmentioned_group_message(msg, MessageType.TEXT, update_id=update.update_id)
             return
@@ -5937,6 +6153,12 @@ class TelegramAdapter(BasePlatformAdapter):
         # rather than dropping into the bot's main channel (#22423).
         if chat_type == "group" and thread_id_str is None and is_forum_group:
             thread_id_str = self._GENERAL_TOPIC_THREAD_ID
+        if chat_type == "group" and self._is_personal_workspace_chat(message) and self._personal_workspace_sender_authorized(message) and user:
+            chat_type = "personal_group"
+            group_thread = f"group:{chat.id}"
+            if thread_id_raw is not None:
+                group_thread = f"{group_thread}:{thread_id_raw}"
+            thread_id_str = group_thread
         chat_topic = None
         topic_skill = None
 
@@ -5969,7 +6191,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         # Build source
         source = self.build_source(
-            chat_id=str(chat.id),
+            chat_id=(str(user.id) if chat_type == "personal_group" and user else str(chat.id)),
             chat_name=chat.title or (chat.full_name if hasattr(chat, "full_name") else None),
             chat_type=chat_type,
             user_id=(
@@ -6034,6 +6256,7 @@ class TelegramAdapter(BasePlatformAdapter):
             reply_to_text=reply_to_text,
             auto_skill=topic_skill,
             channel_prompt=_channel_prompt,
+            channel_context=(self._build_channel_context_for_trigger(message) if self._telegram_history_backfill_enabled() else None),
             timestamp=message.date,
         )
 

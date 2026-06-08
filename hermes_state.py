@@ -415,17 +415,26 @@ class SessionDB:
     # Attempt a PASSIVE WAL checkpoint every N successful writes.
     _CHECKPOINT_EVERY_N_WRITES = 50
 
-    def __init__(self, db_path: Path = None):
+    def __init__(self, db_path: Path = None, read_only: bool = False):
         self.db_path = db_path or DEFAULT_DB_PATH
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        if not read_only:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
         self._lock = threading.Lock()
+        self._write_lock = threading.RLock()
+        self._local = threading.local()
+        self._write_depth = 0
         self._write_count = 0
         self._fts_enabled = False
         self._fts_unavailable_warned = False
         try:
+            db_uri = str(self.db_path)
+            connect_kwargs = {}
+            if read_only:
+                db_uri = f"file:{self.db_path}?mode=ro"
+                connect_kwargs["uri"] = True
             self._conn = sqlite3.connect(
-                str(self.db_path),
+                db_uri,
                 check_same_thread=False,
                 # Short timeout — application-level retry with random jitter
                 # handles contention instead of sitting in SQLite's internal
@@ -435,6 +444,7 @@ class SessionDB:
                 # explicit BEGIN IMMEDIATE.  None = we manage transactions
                 # ourselves.
                 isolation_level=None,
+                **connect_kwargs,
             )
             self._conn.row_factory = sqlite3.Row
             apply_wal_with_fallback(self._conn, db_label="state.db")
@@ -3199,20 +3209,103 @@ class SessionDB:
             )
             return [dict(row) for row in cursor.fetchall()]
 
+
+    def search_sessions_by_id(
+        self,
+        query: str,
+        limit: int = 20,
+        include_archived: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """Search sessions by id for dashboard search.
+
+        Matches exact id, prefix, and substring case-insensitively. Compression
+        roots are projected to their live tip, mirroring list_sessions_rich's
+        user-facing behavior so an old compressed segment opens the current
+        continuation.
+        """
+        needle = (query or "").strip()
+        if not needle:
+            return []
+        safe_limit = max(1, min(int(limit or 20), 500))
+        where = ["LOWER(id) LIKE LOWER(?)"]
+        params: List[Any] = [f"%{needle}%"]
+        if not include_archived:
+            where.append("archived = 0")
+        where_sql = " AND ".join(where)
+        sql = f"""
+            SELECT s.*,
+                COALESCE(
+                    (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
+                     FROM messages m
+                     WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
+                     ORDER BY m.timestamp, m.id LIMIT 1),
+                    ''
+                ) AS preview,
+                CASE
+                    WHEN LOWER(s.id) = LOWER(?) THEN 0
+                    WHEN LOWER(s.id) LIKE LOWER(?) THEN 1
+                    ELSE 2
+                END AS rank
+            FROM sessions s
+            WHERE {where_sql}
+            ORDER BY rank ASC, s.started_at DESC
+            LIMIT ?
+        """
+        params2 = [needle, f"{needle}%"] + params + [safe_limit * 3]
+        with self._lock:
+            rows = [dict(r) for r in self._conn.execute(sql, params2).fetchall()]
+
+        results: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+        for row in rows:
+            sid = row.get("id")
+            tip = self.get_compression_tip(sid) if sid else sid
+            out = row
+            if tip and tip != sid:
+                tip_row = self.get_session(tip)
+                if tip_row:
+                    out = dict(tip_row)
+                    out["preview"] = row.get("preview", "")
+                    out["_lineage_root_id"] = sid
+            else:
+                out["_lineage_root_id"] = sid
+            out_id = out.get("id")
+            if out_id in seen:
+                continue
+            seen.add(out_id)
+            results.append(out)
+            if len(results) >= safe_limit:
+                break
+        return results
+
     def session_count(
         self,
         source: str = None,
+        exclude_sources: List[str] = None,
         min_message_count: int = 0,
         include_archived: bool = False,
         archived_only: bool = False,
+        exclude_children: bool = False,
     ) -> int:
-        """Count sessions, optionally filtered by source."""
+        """Count sessions, optionally filtered by source/excluded sources."""
         where_clauses = []
         params = []
 
+        if exclude_children:
+            where_clauses.append(
+                "(parent_session_id IS NULL"
+                " OR EXISTS (SELECT 1 FROM sessions p"
+                "            WHERE p.id = sessions.parent_session_id"
+                "            AND p.end_reason = 'branched'"
+                "            AND sessions.started_at >= p.ended_at))"
+            )
         if source:
             where_clauses.append("source = ?")
             params.append(source)
+        if exclude_sources:
+            placeholders = ",".join("?" for _ in exclude_sources)
+            where_clauses.append(f"source NOT IN ({placeholders})")
+            params.extend(exclude_sources)
         if min_message_count > 0:
             where_clauses.append("message_count >= ?")
             params.append(min_message_count)

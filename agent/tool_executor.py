@@ -611,6 +611,18 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             function_args = {}
         if not isinstance(function_args, dict):
             function_args = {}
+        _tool_middleware_trace = []
+
+        try:
+            from agent.agent_runtime_helpers import agent_runtime_owns_post_tool_hook
+            if agent_runtime_owns_post_tool_hook(agent, function_name):
+                from hermes_cli.plugins import invoke_middleware
+                for _mw_result in invoke_middleware("tool_request", tool_name=function_name, args=function_args):
+                    if isinstance(_mw_result, dict) and isinstance(_mw_result.get("args"), dict):
+                        function_args = _mw_result["args"]
+                        _tool_middleware_trace.append({"source": _mw_result.get("source", "tool_request")})
+        except Exception:
+            pass
 
         # Tool Search unwrap — see execute_tool_calls_concurrent for full
         # rationale, including the scope gate (the unwrap dispatches the
@@ -673,6 +685,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 _guardrail_block_decision = guardrail_decision
 
         _execution_blocked = _skill_gate_msg is not None or _block_msg is not None or _guardrail_block_decision is not None
+
+        function_args_for_post_hook = function_args
 
         if _execution_blocked:
             # Tool blocked by plugin or guardrail policy — skip counters,
@@ -761,11 +775,19 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             tool_duration = 0.0
         elif function_name == "todo":
             from tools.todo_tool import todo_tool as _todo_tool
-            function_result = _todo_tool(
-                todos=function_args.get("todos"),
-                merge=function_args.get("merge", False),
-                store=agent._todo_store,
+            from agent.agent_runtime_helpers import _apply_agent_runtime_tool_execution_middleware
+            _effective_function_args = dict(function_args)
+            function_result = _apply_agent_runtime_tool_execution_middleware(
+                function_name,
+                function_args,
+                lambda args: _todo_tool(
+                    todos=args.get("todos"),
+                    merge=args.get("merge", False),
+                    store=agent._todo_store,
+                ),
+                _effective_function_args,
             )
+            function_args_for_post_hook = _effective_function_args
             tool_duration = time.time() - tool_start_time
             if agent._should_emit_quiet_tool_messages():
                 agent._vprint(f"  {_get_cute_tool_message_impl('todo', function_args, tool_duration, result=function_result)}")
@@ -925,6 +947,28 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     disabled_toolsets=getattr(agent, "disabled_toolsets", None),
                 )
                 _spinner_result = function_result
+            except KeyboardInterrupt:
+                cancel_result = json.dumps({"status": "cancelled", "error": "KeyboardInterrupt"}, ensure_ascii=False)
+                try:
+                    from model_tools import _emit_post_tool_call_hook
+                    _emit_post_tool_call_hook(
+                        function_name=function_name,
+                        function_args=function_args,
+                        result=cancel_result,
+                        task_id=effective_task_id,
+                        session_id=agent.session_id or "",
+                        tool_call_id=getattr(tool_call, "id", None),
+                        turn_id=getattr(agent, "_current_turn_id", "") or "",
+                        api_request_id=getattr(agent, "_current_api_request_id", "") or "",
+                        duration_ms=int((time.time() - tool_start_time) * 1000),
+                        status="cancelled",
+                        error_type="keyboard_interrupt",
+                        error_message="KeyboardInterrupt",
+                        middleware_trace=list(_tool_middleware_trace),
+                    )
+                except Exception:
+                    pass
+                raise
             except Exception as tool_error:
                 function_result = f"Error executing tool '{function_name}': {tool_error}"
                 logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
@@ -946,6 +990,28 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     enabled_toolsets=getattr(agent, "enabled_toolsets", None),
                     disabled_toolsets=getattr(agent, "disabled_toolsets", None),
                 )
+            except KeyboardInterrupt:
+                cancel_result = json.dumps({"status": "cancelled", "error": "KeyboardInterrupt"}, ensure_ascii=False)
+                try:
+                    from model_tools import _emit_post_tool_call_hook
+                    _emit_post_tool_call_hook(
+                        function_name=function_name,
+                        function_args=function_args,
+                        result=cancel_result,
+                        task_id=effective_task_id,
+                        session_id=agent.session_id or "",
+                        tool_call_id=getattr(tool_call, "id", None),
+                        turn_id=getattr(agent, "_current_turn_id", "") or "",
+                        api_request_id=getattr(agent, "_current_api_request_id", "") or "",
+                        duration_ms=int((time.time() - tool_start_time) * 1000),
+                        status="cancelled",
+                        error_type="keyboard_interrupt",
+                        error_message="KeyboardInterrupt",
+                        middleware_trace=list(_tool_middleware_trace),
+                    )
+                except Exception:
+                    pass
+                raise
             except Exception as tool_error:
                 function_result = f"Error executing tool '{function_name}': {tool_error}"
                 logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
@@ -993,6 +1059,28 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
         else:
             logger.info("tool %s completed (%.2fs, %d chars)", function_name, tool_duration, _result_len)
+
+        try:
+            from agent.agent_runtime_helpers import (
+                agent_runtime_owns_post_tool_hook,
+                _emit_agent_runtime_post_tool_call,
+            )
+            if _execution_blocked or agent_runtime_owns_post_tool_hook(agent, function_name):
+                _emit_agent_runtime_post_tool_call(
+                    agent,
+                    function_name,
+                    function_args_for_post_hook,
+                    function_result,
+                    effective_task_id,
+                    getattr(tool_call, "id", None),
+                    tool_start_time,
+                    _tool_middleware_trace,
+                    status="blocked" if _execution_blocked else None,
+                    error_type="plugin_block" if _block_msg is not None else ("skill_gate_block" if _skill_gate_msg is not None else ("guardrail_block" if _guardrail_block_decision is not None else None)),
+                    error_message=_block_msg or _skill_gate_msg,
+                )
+        except Exception:
+            pass
 
         # Track file-mutation outcome for the turn-end verifier.  See
         # the concurrent path for the rationale; both paths must feed

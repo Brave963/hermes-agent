@@ -715,6 +715,31 @@ class TestPrefetch:
             "limit": 3,
         }
 
+    def test_prefetch_uses_explicit_memory_namespace(self, provider, monkeypatch):
+        captured_payload = None
+
+        def fake_search(payload):
+            nonlocal captured_payload
+            captured_payload = payload
+            return json.dumps({
+                "results": [
+                    {
+                        "uri": "core://eval/gateway-canary",
+                        "snippet": "Synthetic gateway canary code is GW-ANCHOR-12345",
+                    }
+                ]
+            })
+
+        provider._platform = "api_server"
+        provider._user_id = "7359770766"
+        provider._chat_id = "7359770766"
+        provider._memory_namespace = "telegram:7359770766"
+        monkeypatch.setattr("tools.memory_graph_tool._search", fake_search)
+
+        result = provider.prefetch("gateway turn query")
+        assert "## Memory Graph Anchors" in result
+        assert captured_payload["namespace"] == "telegram:7359770766"
+
     def test_prefetch_keeps_hindsight_when_memory_graph_fails(self, provider, monkeypatch):
         def broken_search(payload):
             raise RuntimeError("memory graph unavailable")

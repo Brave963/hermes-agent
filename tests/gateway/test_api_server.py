@@ -30,6 +30,7 @@ from gateway.platforms.api_server import (
     ResponseStore,
     _IdempotencyCache,
     _derive_chat_session_id,
+    _identity_from_gateway_session_key,
     check_api_server_requirements,
     cors_middleware,
     security_headers_middleware,
@@ -336,6 +337,55 @@ class TestAdapterInit:
 
         assert isinstance(agent, FakeAgent)
         assert captured["reasoning_config"] == {"enabled": True, "effort": "xhigh"}
+
+    @pytest.mark.parametrize(
+        ("session_key", "expected"),
+        [
+            ("telegram:7359770766", ("7359770766", "7359770766", "dm", "telegram:7359770766")),
+            ("telegram:dm:7359770766", ("7359770766", "7359770766", "dm", "telegram:7359770766")),
+            ("agent:main:telegram:dm:7359770766", ("7359770766", "7359770766", "dm", "telegram:7359770766")),
+            ("telegram:group:-100123", (None, "-100123", "group", "telegram:group:-100123")),
+            ("agent:main:telegram:group:-100123", (None, "-100123", "group", "telegram:group:-100123")),
+            ("custom-session", (None, None, None, None)),
+            (None, (None, None, None, None)),
+        ],
+    )
+    def test_identity_from_gateway_session_key(self, session_key, expected):
+        assert _identity_from_gateway_session_key(session_key) == expected
+
+    def test_create_agent_maps_telegram_session_key_to_memory_scope(self, monkeypatch):
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr("gateway.run._resolve_runtime_agent_kwargs", lambda: {})
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "gpt-5.5")
+        monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
+        monkeypatch.setattr(
+            "gateway.run.GatewayRunner._load_reasoning_config",
+            staticmethod(lambda: {}),
+        )
+        monkeypatch.setattr("gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None))
+        monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        agent = adapter._create_agent(
+            session_id="api-session",
+            gateway_session_key="agent:main:telegram:dm:7359770766",
+        )
+
+        assert isinstance(agent, FakeAgent)
+        assert captured["platform"] == "api_server"
+        assert captured["user_id"] == "7359770766"
+        assert captured["chat_id"] == "7359770766"
+        assert captured["chat_type"] == "dm"
+        assert captured["memory_namespace"] == "telegram:7359770766"
+        assert captured["gateway_session_key"] == "agent:main:telegram:dm:7359770766"
 
 
 # ---------------------------------------------------------------------------

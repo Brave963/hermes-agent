@@ -174,7 +174,7 @@ class TestStreamingContextScrubberCaseInsensitivity:
 
 
 class TestSanitizeContextUnchanged:
-    """Smoke test that the one-shot sanitize_context still works for whole strings."""
+    """Provider-input sanitize_context unwraps whole strings and keeps payload."""
 
     def test_whole_block_still_sanitized(self):
         leaked = (
@@ -185,7 +185,9 @@ class TestSanitizeContextUnchanged:
             "</memory-context>\nVisible"
         )
         out = sanitize_context(leaked).strip()
-        assert out == "Visible"
+        assert "<memory-context>" not in out
+        assert "payload" in out
+        assert "Visible" in out
 
 
 class TestStreamingContextScrubberCrossTurn:
@@ -235,8 +237,10 @@ class TestBuildMemoryContextBlockWarnsOnViolation:
             out = build_memory_context_block(prewrapped)
 
         assert any("pre-wrapped" in rec.message for rec in caplog.records)
-        assert out.count("<memory-context>") == 1
-        assert out.count("</memory-context>") == 1
+        assert out.count("<memory-context>") == 0
+        assert out.count("</memory-context>") == 0
+        assert "## Recalled Memory Context" in out
+        assert "real fact" in out
 
     def test_clean_provider_output_does_not_warn(self, caplog):
         import logging

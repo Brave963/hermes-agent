@@ -740,6 +740,33 @@ class TestPrefetch:
         assert "## Memory Graph Anchors" in result
         assert captured_payload["namespace"] == "telegram:7359770766"
 
+    def test_memory_graph_prefetch_uses_focused_query_before_full_prompt(self, provider, monkeypatch):
+        captured_queries = []
+
+        def fake_search(payload):
+            captured_queries.append(payload["query"])
+            if payload["query"] == "Veylix gateway recall probe code":
+                return json.dumps({
+                    "results": [
+                        {
+                            "uri": "core://eval/gateway-canary",
+                            "snippet": "Synthetic gateway canary code is GW-ANCHOR-12345",
+                        }
+                    ]
+                })
+            return json.dumps({"results": []})
+
+        monkeypatch.setattr("tools.memory_graph_tool._search", fake_search)
+
+        result = provider.prefetch(
+            "A temporary Memory Graph Anchor contains the Veylix gateway recall probe code. "
+            "Return only the exact GW-ANCHOR-* code visible in recalled memory context. "
+            "If no such code is visible, answer UNKNOWN."
+        )
+
+        assert "GW-ANCHOR-12345" in result
+        assert captured_queries[0] == "Veylix gateway recall probe code"
+
     def test_prefetch_keeps_hindsight_when_memory_graph_fails(self, provider, monkeypatch):
         def broken_search(payload):
             raise RuntimeError("memory graph unavailable")

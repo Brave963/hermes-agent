@@ -2,7 +2,8 @@
 
 import json
 import pytest
-from unittest.mock import MagicMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 from agent.memory_provider import MemoryProvider
 from agent.memory_manager import MemoryManager
@@ -220,6 +221,68 @@ class TestMemoryManager:
 
         result = mgr.prefetch_all("query")
         assert result == "Has memories"
+
+    def test_hindsight_memory_graph_anchors_reach_fenced_context(self, tmp_path, monkeypatch):
+        """Fresh manager path: Hindsight prefetch anchors become model-visible context."""
+        from agent.memory_manager import build_memory_context_block
+        from plugins.memory.hindsight import HindsightMemoryProvider
+
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps({
+            "mode": "cloud",
+            "apiKey": "test-key",
+            "api_url": "http://localhost:9999",
+            "bank_id": "test-bank",
+            "budget": "mid",
+            "memory_mode": "hybrid",
+            "memory_graph_prefetch": True,
+            "memory_graph_prefetch_limit": 2,
+        }))
+        monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: tmp_path)
+
+        def fake_search(payload):
+            assert payload == {
+                "query": "What are the student's DSE electives?",
+                "domain": "core",
+                "limit": 2,
+                "namespace": "telegram:student-user",
+            }
+            return json.dumps({
+                "results": [
+                    {
+                        "uri": "core://user-profile/student-dse-electives",
+                        "snippet": "Student studies Physics, Economics, ICT and did not choose M1/M2.",
+                    }
+                ]
+            })
+
+        monkeypatch.setattr("tools.memory_graph_tool._search", fake_search)
+
+        provider = HindsightMemoryProvider()
+        provider.initialize(
+            session_id="fresh-session",
+            user_id="student-user",
+            platform="telegram",
+            chat_id="student-chat",
+        )
+        provider._client = MagicMock()
+        provider._client.arecall = AsyncMock(return_value=SimpleNamespace(results=[
+            SimpleNamespace(id="mem-1", text="Broad Hindsight long-tail context"),
+        ]))
+
+        mgr = MemoryManager()
+        mgr.add_provider(provider)
+        raw_context = mgr.prefetch_all("What are the student's DSE electives?", session_id="fresh-session")
+        fenced = build_memory_context_block(raw_context)
+        model_user_content = "What are the student's DSE electives?\n\n" + fenced
+
+        assert "<memory-context>" in model_user_content
+        assert "## Memory Graph Anchors" in model_user_content
+        assert "student-dse-electives" in model_user_content
+        assert "Physics, Economics, ICT" in model_user_content
+        assert model_user_content.index("## Memory Graph Anchors") < model_user_content.index("## Hindsight Recall")
+        assert "Broad Hindsight long-tail context" in model_user_content
 
     def test_queue_prefetch_all(self):
         mgr = MemoryManager()

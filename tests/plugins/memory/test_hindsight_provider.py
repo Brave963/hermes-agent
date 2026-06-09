@@ -25,6 +25,7 @@ from plugins.memory.hindsight import (
     _normalize_retain_tags,
     _resolve_bank_id_template,
     _sanitize_bank_segment,
+    _track_recalled_results,
 )
 
 
@@ -67,8 +68,8 @@ def _make_mock_client():
     client.arecall = AsyncMock(
         return_value=SimpleNamespace(
             results=[
-                SimpleNamespace(text="Memory 1"),
-                SimpleNamespace(text="Memory 2"),
+                SimpleNamespace(id="mem-1", text="Memory 1"),
+                SimpleNamespace(memory_id="mem-2", text="Memory 2"),
             ]
         )
     )
@@ -151,6 +152,37 @@ def test_normalize_retain_tags_accepts_csv_and_dedupes():
 def test_normalize_retain_tags_accepts_json_array_string():
     value = json.dumps(["agent:fakeassistantname", "source_system:hermes-agent"])
     assert _normalize_retain_tags(value) == ["agent:fakeassistantname", "source_system:hermes-agent"]
+
+
+# ---------------------------------------------------------------------------
+# Access tracking tests
+# ---------------------------------------------------------------------------
+
+
+def test_track_recalled_results_records_supported_id_shapes(monkeypatch):
+    calls = []
+
+    def fake_record_recall(ids):
+        calls.append(ids)
+
+    monkeypatch.setattr("agent.hindsight_access_tracker.record_recall", fake_record_recall)
+    _track_recalled_results([
+        SimpleNamespace(id="mem-1", text="one"),
+        SimpleNamespace(memory_id="mem-2", text="two"),
+        {"uuid": "mem-3", "text": "three"},
+        SimpleNamespace(text="no id"),
+    ])
+
+    assert calls == [["mem-1", "mem-2", "mem-3"]]
+
+
+def test_track_recalled_results_ignores_results_without_ids(monkeypatch):
+    calls = []
+    monkeypatch.setattr("agent.hindsight_access_tracker.record_recall", lambda ids: calls.append(ids))
+
+    _track_recalled_results([SimpleNamespace(text="no id"), {"text": "also no id"}])
+
+    assert calls == []
 
 
 # ---------------------------------------------------------------------------

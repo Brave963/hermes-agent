@@ -200,6 +200,35 @@ def _print_billing_or_entitlement_guidance(
     return True
 
 
+def _build_api_message_with_ephemeral_context(
+    msg: Dict[str, Any],
+    *,
+    idx: int,
+    current_turn_user_idx: int,
+    ext_prefetch_cache: str,
+    plugin_user_context: str,
+) -> Dict[str, Any]:
+    """Return an API-call copy with ephemeral context on the current user turn."""
+    api_msg = msg.copy()
+    if idx != current_turn_user_idx or msg.get("role") != "user":
+        return api_msg
+
+    injections: list[str] = []
+    if ext_prefetch_cache:
+        fenced = build_memory_context_block(ext_prefetch_cache)
+        if fenced:
+            injections.append(fenced)
+    if plugin_user_context:
+        injections.append(plugin_user_context)
+    if not injections:
+        return api_msg
+
+    base = api_msg.get("content", "")
+    if isinstance(base, str):
+        api_msg["content"] = base + "\n\n" + "\n\n".join(injections)
+    return api_msg
+
+
 def _try_refresh_nous_paid_entitlement_credentials(agent) -> bool:
     """Refresh Nous runtime credentials after a fresh paid-entitlement check."""
     try:
@@ -939,25 +968,13 @@ def run_conversation(
 
         api_messages = []
         for idx, msg in enumerate(messages):
-            api_msg = msg.copy()
-
-            # Inject ephemeral context into the current turn's user message.
-            # Sources: memory manager prefetch + plugin pre_llm_call hooks
-            # with target="user_message" (the default).  Both are
-            # API-call-time only — the original message in `messages` is
-            # never mutated, so nothing leaks into session persistence.
-            if idx == current_turn_user_idx and msg.get("role") == "user":
-                _injections = []
-                if _ext_prefetch_cache:
-                    _fenced = build_memory_context_block(_ext_prefetch_cache)
-                    if _fenced:
-                        _injections.append(_fenced)
-                if _plugin_user_context:
-                    _injections.append(_plugin_user_context)
-                if _injections:
-                    _base = api_msg.get("content", "")
-                    if isinstance(_base, str):
-                        api_msg["content"] = _base + "\n\n" + "\n\n".join(_injections)
+            api_msg = _build_api_message_with_ephemeral_context(
+                msg,
+                idx=idx,
+                current_turn_user_idx=current_turn_user_idx,
+                ext_prefetch_cache=_ext_prefetch_cache,
+                plugin_user_context=_plugin_user_context,
+            )
 
             # For ALL assistant messages, pass reasoning back to the API
             # This ensures multi-turn reasoning context is preserved

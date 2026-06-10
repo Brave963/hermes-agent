@@ -731,14 +731,14 @@ class TestPrefetch:
             })
 
         provider._platform = "api_server"
-        provider._user_id = "7359770766"
-        provider._chat_id = "7359770766"
-        provider._memory_namespace = "telegram:7359770766"
+        provider._user_id = "test-user"
+        provider._chat_id = "test-user"
+        provider._memory_namespace = "test-namespace"
         monkeypatch.setattr("tools.memory_graph_tool._search", fake_search)
 
         result = provider.prefetch("gateway turn query")
         assert "## Memory Graph Anchors" in result
-        assert captured_payload["namespace"] == "telegram:7359770766"
+        assert captured_payload["namespace"] == "test-namespace"
 
     def test_memory_graph_prefetch_uses_focused_query_before_full_prompt(self, provider, monkeypatch):
         captured_queries = []

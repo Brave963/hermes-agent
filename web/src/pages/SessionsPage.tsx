@@ -34,6 +34,7 @@ import type {
   SessionInfo,
   SessionMessage,
   SessionSearchResult,
+  SessionSourceCount,
   SessionStoreStats,
   StatusResponse,
 } from "@/lib/api";
@@ -625,6 +626,8 @@ export default function SessionsPage() {
   const logScrollRef = useRef<HTMLPreElement | null>(null);
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [overviewSessions, setOverviewSessions] = useState<SessionInfo[]>([]);
+  const [selectedSource, setSelectedSource] = useState("");
+  const [sourceCounts, setSourceCounts] = useState<SessionSourceCount[]>([]);
   const [view, setView] = useState<SessionsView>("overview");
   // Count of empty (no-message, ended, non-archived) sessions across the
   // entire DB, populated by /api/sessions/empty/count. Used to:
@@ -707,14 +710,15 @@ export default function SessionsPage() {
   const loadSessions = useCallback((p: number) => {
     setLoading(true);
     api
-      .getSessions(PAGE_SIZE, p * PAGE_SIZE)
+      .getSessions(PAGE_SIZE, p * PAGE_SIZE, selectedSource)
       .then((resp) => {
         setSessions(resp.sessions);
         setTotal(resp.total);
+        setSourceCounts(resp.sources ?? []);
       })
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, []);
+  }, [selectedSource]);
 
   const loadStats = useCallback(() => {
     api
@@ -740,7 +744,10 @@ export default function SessionsPage() {
         .catch(() => {});
       api
         .getSessions(50)
-        .then((r) => setOverviewSessions(r.sessions))
+        .then((r) => {
+          setOverviewSessions(r.sessions);
+          setSourceCounts(r.sources ?? []);
+        })
         .catch(() => {});
     };
     loadOverview();
@@ -778,6 +785,15 @@ export default function SessionsPage() {
   const switchView = useCallback(
     (next: SessionsView) => {
       setView(next);
+      clearSelection();
+    },
+    [clearSelection],
+  );
+  const sessionSourceFilterMarker = "session-source-filter-v2";
+  const updateSourceFilter = useCallback(
+    (source: string) => {
+      setSelectedSource(source);
+      setPage(0);
       clearSelection();
     },
     [clearSelection],
@@ -1078,6 +1094,7 @@ export default function SessionsPage() {
     platformEntries.length > 0 || recentSessions.length > 0;
   const showList = view === "list" || isSearching || !showOverviewTab;
   const showPagination = showList && !searchResults && total > PAGE_SIZE;
+  const showSourceFilter = showList && !isSearching && sourceCounts.length > 1;
 
   useEffect(() => {
     if (isSearching) setView("list");
@@ -1377,6 +1394,40 @@ export default function SessionsPage() {
                     <X />
                   </Button>
                 )}
+              </div>
+            )}
+
+            {showSourceFilter && (
+              <div
+                className="flex min-w-0 max-w-full flex-wrap items-center gap-1.5 overflow-hidden"
+                data-session-source-filter={sessionSourceFilterMarker}
+              >
+                <Button
+                  type="button"
+                  size="sm"
+                  outlined={selectedSource !== ""}
+                  onClick={() => updateSourceFilter("")}
+                  aria-pressed={selectedSource === ""}
+                >
+                  <span className="font-mondwest normal-case text-xs">All</span>
+                </Button>
+                {sourceCounts.map((entry) => (
+                  <Button
+                    key={entry.source}
+                    type="button"
+                    size="sm"
+                    outlined={selectedSource !== entry.source}
+                    onClick={() => updateSourceFilter(entry.source)}
+                    aria-pressed={selectedSource === entry.source}
+                  >
+                    <span className="font-mondwest normal-case max-w-[7rem] truncate text-xs">
+                      {entry.source}
+                    </span>
+                    <span className="font-mono-ui text-[0.6875rem] text-muted-foreground">
+                      {entry.count}
+                    </span>
+                  </Button>
+                ))}
               </div>
             )}
 

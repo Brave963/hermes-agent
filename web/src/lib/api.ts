@@ -283,8 +283,14 @@ export const api = {
       window.location.assign("/login");
       return r;
     }),
-  getSessions: (limit = 20, offset = 0) =>
-    fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
+  getSessions: (limit = 20, offset = 0, source = "") => {
+    const params = new URLSearchParams({
+      limit: String(limit),
+      offset: String(offset),
+    });
+    if (source) params.set("source", source);
+    return fetchJSON<PaginatedSessions>(`/api/sessions?${params.toString()}`);
+  },
   getSessionMessages: (id: string) =>
     fetchJSON<SessionMessagesResponse>(`/api/sessions/${encodeURIComponent(id)}/messages`),
   getSessionLatestDescendant: (id: string) =>
@@ -1419,6 +1425,11 @@ export interface SessionInfo {
   parent_session_id?: string | null;
 }
 
+export interface SessionSourceCount {
+  source: string;
+  count: number;
+}
+
 export interface SessionLatestDescendantResponse {
   requested_session_id: string;
   session_id: string;
@@ -1431,6 +1442,9 @@ export interface PaginatedSessions {
   total: number;
   limit: number;
   offset: number;
+  source?: string;
+  exclude_sources?: string[];
+  sources?: SessionSourceCount[];
 }
 
 export interface EnvVarInfo {

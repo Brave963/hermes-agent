@@ -1673,6 +1673,14 @@ async def get_sessions(
                 archived_only=archived_only,
                 exclude_children=True,
             )
+            if hasattr(db, "session_source_counts"):
+                sources = db.session_source_counts(
+                    min_message_count=min_message_count,
+                    include_archived=include_archived,
+                    archived_only=archived_only,
+                )
+            else:
+                sources = []
             now = time.time()
             for s in sessions:
                 s["is_active"] = (
@@ -1681,7 +1689,15 @@ async def get_sessions(
                 )
                 # SQLite stores the flag as 0/1; expose a real JSON boolean.
                 s["archived"] = bool(s.get("archived"))
-            return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
+            return {
+                "sessions": sessions,
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+                "source": source or "",
+                "exclude_sources": exclude_list,
+                "sources": sources,
+            }
         finally:
             db.close()
     except Exception:

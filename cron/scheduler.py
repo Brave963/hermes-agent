@@ -1326,7 +1326,20 @@ def _scan_assembled_cron_prompt(assembled: str, job: dict, *, has_skills: bool =
         # unicode is sanitized (not blocked) so a stray zero-width space in a
         # skill code example can't permanently kill the job; the cleaned
         # prompt is what actually runs.
-        cleaned, scan_error = _scan_cron_skill_assembled(assembled)
+        scan_result = _scan_cron_skill_assembled(assembled)
+        # Compatibility guard: gateway/scheduler may run mixed code during a
+        # hot patch. Older tool code returned only an error string, while the
+        # newer API returns (cleaned_prompt, error). Never let this crash every
+        # skill-backed cron job with "values to unpack".
+        if isinstance(scan_result, tuple):
+            if len(scan_result) >= 2:
+                cleaned, scan_error = scan_result[0], scan_result[1]
+            elif len(scan_result) == 1:
+                cleaned, scan_error = assembled, scan_result[0]
+            else:
+                cleaned, scan_error = assembled, ""
+        else:
+            cleaned, scan_error = assembled, str(scan_result or "")
         assembled = cleaned
     else:
         scan_error = _scan_cron_prompt(assembled)

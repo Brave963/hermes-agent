@@ -3287,7 +3287,7 @@ class SessionDB:
         archived_only: bool = False,
         exclude_children: bool = False,
     ) -> int:
-        """Count sessions, optionally filtered by source/excluded sources."""
+        """Count sessions, optionally filtered like ``list_sessions_rich``."""
         where_clauses = []
         params = []
 

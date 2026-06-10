@@ -42,3 +42,30 @@ def test_auto_recall_uses_content_not_only_snippet(monkeypatch):
     assert result and "context" in result
     assert "--betas context-1m-2025-08-07" in result["context"]
     assert "Do not stop at Not logged in" in result["context"]
+
+
+def test_high_signal_messages_expand_to_semantic_planner_queries():
+    mod = _load_plugin()
+
+    queries = mod._build_recall_queries("我今天英文作文那个复盘你还记得吗")
+    joined = "\n".join(queries)
+
+    assert "target function" in joined
+    assert "disclosure" in joined
+    assert "readback" in joined
+    assert "适用场景" in joined
+    assert "触发语义" in joined
+    assert "用户意图" in joined
+    assert "写作方法论" in joined or "表达偏好" in joined
+
+
+def test_unrelated_messages_do_not_get_semantic_planner_expansion():
+    mod = _load_plugin()
+
+    queries = mod._build_recall_queries("今天天气怎么样")
+    joined = "\n".join(queries)
+
+    assert queries == ["今天天气怎么样"]
+    assert "target function" not in joined
+    assert "disclosure" not in joined
+    assert "readback" not in joined

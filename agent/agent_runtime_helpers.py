@@ -41,93 +41,6 @@ from utils import base_url_host_matches, base_url_hostname, env_var_enabled, ato
 logger = logging.getLogger(__name__)
 
 
-AGENT_RUNTIME_POST_HOOK_TOOL_NAMES = frozenset({
-    "todo",
-    "session_search",
-    "memory",
-    "clarify",
-    "delegate_task",
-})
-
-
-def agent_runtime_owns_post_tool_hook(agent_or_function_name, function_name: Optional[str] = None) -> bool:
-    if function_name is None:
-        return agent_or_function_name in AGENT_RUNTIME_POST_HOOK_TOOL_NAMES
-    agent = agent_or_function_name
-    if function_name in AGENT_RUNTIME_POST_HOOK_TOOL_NAMES:
-        return True
-    if getattr(agent, "_context_engine_tool_names", None) and function_name in agent._context_engine_tool_names:
-        return True
-    memory_manager = getattr(agent, "_memory_manager", None)
-    try:
-        return bool(memory_manager and memory_manager.has_tool(function_name))
-    except Exception:
-        return False
-
-
-def _emit_agent_runtime_post_tool_call(
-    agent,
-    function_name: str,
-    function_args: dict,
-    result: Any,
-    effective_task_id: str,
-    tool_call_id: Optional[str],
-    start_time: float,
-    middleware_trace: Optional[list[dict[str, Any]]] = None,
-    *,
-    status: Optional[str] = None,
-    error_type: Optional[str] = None,
-    error_message: Optional[str] = None,
-) -> None:
-    try:
-        from model_tools import _emit_post_tool_call_hook
-        _emit_post_tool_call_hook(
-            function_name=function_name,
-            function_args=function_args,
-            result=result,
-            task_id=effective_task_id,
-            session_id=agent.session_id or "",
-            tool_call_id=tool_call_id or "",
-            turn_id=getattr(agent, "_current_turn_id", "") or "",
-            api_request_id=getattr(agent, "_current_api_request_id", "") or "",
-            duration_ms=int((time.time() - start_time) * 1000),
-            status=status,
-            error_type=error_type,
-            error_message=error_message,
-            middleware_trace=list(middleware_trace or []),
-        )
-    except Exception:
-        pass
-
-
-def _apply_agent_runtime_tool_execution_middleware(
-    function_name: str,
-    function_args: dict,
-    next_call,
-    effective_args_out: Optional[dict] = None,
-):
-    try:
-        from hermes_cli.plugins import get_plugin_manager
-        manager = get_plugin_manager()
-        middleware = getattr(manager, "_middleware", {}).get("tool_execution", []) if manager else []
-    except Exception:
-        middleware = []
-
-    def call_at(index: int, args: dict):
-        if index >= len(middleware):
-            if isinstance(effective_args_out, dict):
-                effective_args_out.clear()
-                effective_args_out.update(args)
-            return next_call(args)
-        return middleware[index](
-            tool_name=function_name,
-            args=args,
-            next_call=lambda next_args: call_at(index + 1, next_args),
-        )
-
-    return call_at(0, function_args)
-
-
 def _ra():
     """Lazy ``run_agent`` reference for test-patch routing."""
     import run_agent
@@ -1701,24 +1614,6 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     tools. Used by the concurrent execution path; the sequential path retains
     its own inline invocation for backward-compatible display handling.
     """
-    _tool_start_time = time.time()
-    _tool_middleware_trace = list(tool_request_middleware_trace or [])
-    if agent_runtime_owns_post_tool_hook(function_name) and not skip_tool_request_middleware:
-        try:
-            from hermes_cli.plugins import invoke_middleware
-            for _mw_result in invoke_middleware("tool_request", tool_name=function_name, args=function_args):
-                if isinstance(_mw_result, dict) and isinstance(_mw_result.get("args"), dict):
-                    function_args = _mw_result["args"]
-                    _tool_middleware_trace.append({"source": _mw_result.get("source", "tool_request")})
-        except Exception:
-            try:
-                from hermes_cli.middleware import apply_tool_request_middleware
-                _mw = apply_tool_request_middleware(function_name, function_args)
-                function_args = _mw.payload
-                _tool_middleware_trace = _mw.trace
-            except Exception:
-                pass
-
     # Memory OS dispatch-time preflight gate.  This is deliberately separate
     # from plugin pre_tool_call hooks: pre_tool_block_checked only means the
     # plugin hook already ran in the caller; it must not skip memory policy
@@ -1730,14 +1625,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
         logger.debug("Memory preflight gate failed open due to internal error: %s", _memory_preflight_err)
         _memory_block_msg = None
     if _memory_block_msg:
-        result = json.dumps({"error": _memory_block_msg}, ensure_ascii=False)
-        if agent_runtime_owns_post_tool_hook(function_name):
-            _emit_agent_runtime_post_tool_call(
-                agent, function_name, function_args, result, effective_task_id, tool_call_id,
-                _tool_start_time, _tool_middleware_trace, status="blocked",
-                error_type="memory_preflight_block", error_message=_memory_block_msg,
-            )
-        return result
+        return json.dumps({"error": _memory_block_msg}, ensure_ascii=False)
 
     # Check plugin hooks for a block directive before executing anything.
     block_message: Optional[str] = None
@@ -1750,33 +1638,15 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
         except Exception:
             pass
     if block_message is not None:
-        result = json.dumps({"error": block_message}, ensure_ascii=False)
-        if agent_runtime_owns_post_tool_hook(function_name):
-            _emit_agent_runtime_post_tool_call(
-                agent, function_name, function_args, result, effective_task_id, tool_call_id,
-                _tool_start_time, _tool_middleware_trace, status="blocked",
-                error_type="plugin_block", error_message=block_message,
-            )
-        return result
+        return json.dumps({"error": block_message}, ensure_ascii=False)
 
     if function_name == "todo":
         from tools.todo_tool import todo_tool as _todo_tool
-        _effective_function_args = dict(function_args)
-        result = _apply_agent_runtime_tool_execution_middleware(
-            function_name,
-            function_args,
-            lambda args: _todo_tool(
-                todos=args.get("todos"),
-                merge=args.get("merge", False),
-                store=agent._todo_store,
-            ),
-            _effective_function_args,
+        return _todo_tool(
+            todos=function_args.get("todos"),
+            merge=function_args.get("merge", False),
+            store=agent._todo_store,
         )
-        _emit_agent_runtime_post_tool_call(
-            agent, function_name, _effective_function_args, result, effective_task_id,
-            tool_call_id, _tool_start_time, _tool_middleware_trace,
-        )
-        return result
     elif function_name == "session_search":
         session_db = agent._get_session_db_for_recall()
         if not session_db:
@@ -1842,14 +1712,10 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             function_name, function_args, effective_task_id,
             tool_call_id=tool_call_id,
             session_id=agent.session_id or "",
-            turn_id=getattr(agent, "_current_turn_id", "") or "",
-            api_request_id=getattr(agent, "_current_api_request_id", "") or "",
             enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
             skip_pre_tool_call_hook=True,
-            skip_tool_request_middleware=True,
             enabled_toolsets=getattr(agent, "enabled_toolsets", None),
             disabled_toolsets=getattr(agent, "disabled_toolsets", None),
-            tool_request_middleware_trace=list(tool_request_middleware_trace or []),
         )
 
 

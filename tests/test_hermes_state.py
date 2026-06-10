@@ -196,6 +196,24 @@ class TestSessionLifecycle:
                                model="xiaomi/mimo-v2.5-pro")
         assert db.get_session("s1")["model"] == "xiaomi/mimo-v2.5"
 
+    def test_update_session_meta_preserves_model_by_default(self, db):
+        db.create_session(
+            session_id="s1",
+            source="telegram",
+            model="openai/gpt-5.4",
+            model_config={"provider": "openai"},
+        )
+
+        db.update_session_meta("s1", '{"provider":"anthropic"}')
+        session = db.get_session("s1")
+        assert session["model"] == "openai/gpt-5.4"
+        assert session["model_config"] == '{"provider":"anthropic"}'
+
+        db.update_session_meta("s1", '{"provider":"xiaomi"}', model="xiaomi/mimo-v2.5")
+        session = db.get_session("s1")
+        assert session["model"] == "xiaomi/mimo-v2.5"
+        assert session["model_config"] == '{"provider":"xiaomi"}'
+
     def test_parent_session(self, db):
         db.create_session(session_id="parent", source="cli")
         db.create_session(session_id="child", source="cli", parent_session_id="parent")

@@ -101,7 +101,11 @@ class SearchIndexer:
             return fallback + ("..." if len(content) > 80 else "")
 
         start = max(0, pos - 12)
-        end = min(len(content), pos + match_len + 40)
+        # A subject match commonly occurs near the start of a structured fact,
+        # while the predicate/object that answers the query follows it. Keep a
+        # bounded but useful amount of trailing context so pre-LLM recall does
+        # not select the right node and then omit its value from the prompt.
+        end = min(len(content), pos + match_len + 160)
         prefix = "..." if start > 0 else ""
         suffix = "..." if end < len(content) else ""
         return prefix + content[start:end] + suffix

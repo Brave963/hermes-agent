@@ -45,6 +45,22 @@ def test_snippet_uses_high_signal_term_not_first_low_signal_match():
     assert "是什么、有没有" not in snippet
 
 
+def test_subject_match_snippet_carries_associated_fact_value():
+    subject = "Quenlar calibration profile"
+    value = "QZ-8147"
+    content = (
+        f"Subject: {subject}\n"
+        "Predicate: current calibration code\n"
+        f"Object: {value}\n"
+        "Evidence: explicitly supplied by the user for the active project."
+    )
+
+    snippet = SearchIndexer._format_search_snippet(content, subject)
+
+    assert subject in snippet
+    assert value in snippet
+
+
 def test_search_indexer_or_query_allows_partial_memory_matches():
     class FakeSession:
         def __init__(self):
